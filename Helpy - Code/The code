@@ -1,0 +1,108 @@
+from fastapi import FastAPI, Request, UploadFile, File, Form, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+import os, io, time, logging, uuid
+from typing import Optional
+import openai
+from PIL import Image
+
+app = FastAPI(title="Helpy - Math AI Assistant")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("helpy")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+openai.api_key = OPENAI_API_KEY
+STRIPE_SECRET_KEY = os.environ.get("STRIPE_SECRET_KEY")
+UPLOAD_DIR = "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+USAGE = {}
+
+def record_usage(user_id: str, feature: str):
+    key = f"{user_id}:{feature}"
+    USAGE.setdefault(key, 0)
+    USAGE[key] += 1
+
+def generate_user_id() -> str:
+    return "anon_" + uuid.uuid4().hex[:8]
+
+def call_gpt_for_text(math_question: str) -> str:
+    if not OPENAI_API_KEY:
+        raise RuntimeError("OPENAI_API_KEY not configured")
+    system_msg = "You are Helpy, a math assistant. Always respond with an accurate final numeric/symbolic answer first, then provide the simplest, minimal explanation."
+    user_prompt = f"Problem:\n{math_question}\n\nGive the final answer first, then a very short explanation."
+    resp = openai.ChatCompletion.create(
+        model="gpt-5",
+        messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": user_prompt}],
+        temperature=0.0,
+        max_tokens=600,
+    )
+    return resp.choices[0].message.content.strip()
+
+def extract_text_from_image_bytes(image_bytes: bytes) -> str:
+    try:
+        import pytesseract
+    except Exception:
+        pytesseract = None
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    if pytesseract:
+        try:
+            gray = img.convert("L")
+            text = pytesseract.image_to_string(gray, config='--psm 6').strip()
+            if text:
+                return text
+        except Exception as e:
+            logger.warning("pytesseract failed: %s", e)
+    if not OPENAI_API_KEY:
+        raise RuntimeError("No OCR available")
+    resp = openai.ChatCompletion.create(
+        model="gpt-5",
+        messages=[{"role": "system", "content": "You are an OCR assistant. Extract math from the attached image."}, {"role": "user", "content": "<image attached> Please transcribe the math."}],
+        temperature=0.0,
+        max_tokens=1200,
+    )
+    return resp.choices[0].message.content.strip()
+
+@app.get("/", response_class=HTMLResponse)
+async def homepage():
+    html = """<html><body><h1>Helpy — Math AI</h1><textarea id='question'></textarea><button onclick='ask()'>Ask</button><pre id='answer'></pre><input type='file' id='imagefile'/><button onclick='upload()'>Upload</button><pre id='imganswer'></pre><script>async function ask(){const q=document.getElementById('question').value;document.getElementById('answer').innerText='Thinking...';const r=await fetch('/api/solve',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q})});const j=await r.json();document.getElementById('answer').innerText=j.answer||j.error}async function upload(){const f=document.getElementById('imagefile').files[0];if(!f){alert('choose file');return}const fd=new FormData();fd.append('file',f);document.getElementById('imganswer').innerText='Processing...';const r=await fetch('/api/solve_image',{method:'POST',body:fd});const j=await r.json();document.getElementById('imganswer').innerText=j.answer||j.error}</script></body></html>"""
+    return HTMLResponse(content=html, status_code=200)
+
+@app.post("/api/solve")
+async def api_solve(request: Request):
+    payload = await request.json()
+    question = payload.get("question", "").strip()
+    if not question:
+        return JSONResponse({"error": "question is required"}, status_code=400)
+    user_id = request.headers.get("X-User-Id") or generate_user_id()
+    record_usage(user_id, "text_solve")
+    try:
+        answer = call_gpt_for_text(question)
+        return JSONResponse({"answer": answer})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@app.post("/api/solve_image")
+async def api_solve_image(file: UploadFile = File(...)):
+    contents = await file.read()
+    fname = os.path.join(UPLOAD_DIR, f"{int(time.time())}_{file.filename}")
+    with open(fname, 'wb') as f:
+        f.write(contents)
+    extracted = extract_text_from_image_bytes(contents)
+    if not extracted:
+        return JSONResponse({"error": "Could not extract text"}, status_code=500)
+    problem = extracted + "\n\nPlease solve this and give the final answer first, then a very short explanation."
+    try:
+        answer = call_gpt_for_text(problem)
+        return JSONResponse({"ocr_text": extracted, "answer": answer})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+@app.get('/admin/usage')
+async def admin_usage(secret: Optional[str] = None):
+    if secret != os.environ.get('ADMIN_SECRET'):
+        raise HTTPException(status_code=403, detail='forbidden')
+    return USAGE
+
+if __name__ == '__main__':
+    import uvicorn
+    uvicorn.run('helpy_full_app:app', host='0.0.0.0', port=8000, reload=True)

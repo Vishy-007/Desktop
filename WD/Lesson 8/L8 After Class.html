@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Cascading effects AC</title>
+    <style>
+        #grad {
+            height: 250px;
+            background: linear-gradient(pink, yellow, orange);
+        }
+
+        @keyframes srh {
+            0% {
+                background-color: red;
+            }
+
+            25% {
+                background-color: aqua;
+            }
+
+            50% {
+                background-color: blueviolet;
+            }
+
+            75% {
+                background-color: orange;
+            }
+
+            100% {
+                background-color: palevioletred;
+            }
+        }
+
+        #ani {
+            width: 100px;
+            height: 200px;
+            background-color: aliceblue;
+            animation-name: srh;
+            animation-duration: 10s;
+        }
+
+        h1 {
+            background-color: aqua;
+        }
+
+        body {
+            background-image: url(ball.jpeg);
+            background-repeat: no-repeat;
+            background-attachment: scroll;
+            background-position: center;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>Background,Gradient, and animation</h1>
+    <div id="grad">grad</div>
+    <div id="ani">Hi</div>
+
+</body>
+
+</html>
