@@ -1,5 +1,4 @@
 file = open("random.txt", "r")
-file.read()
 
 content = file.read()
 lines = content.split('\n')
